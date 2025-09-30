@@ -113,8 +113,8 @@ setupIndirectCallTable(DeviceTy &Device, __tgt_device_image *Image,
   for (const auto &Entry : Entries) {
     if (Entry.Kind != llvm::object::OffloadKind::OFK_OpenMP ||
         Entry.Size == 0 ||
-        !(Entry.Flags &
-          (OMP_DECLARE_TARGET_INDIRECT | OMP_DECLARE_TARGET_INDIRECT_VTABLE)))
+        (!(Entry.Flags & OMP_DECLARE_TARGET_INDIRECT) &&
+         !(Entry.Flags & OMP_DECLARE_TARGET_INDIRECT_VTABLE)))
       continue;
 
     size_t PtrSize = sizeof(void *);
@@ -133,11 +133,17 @@ setupIndirectCallTable(DeviceTy &Device, __tgt_device_image *Image,
       if (Device.retrieveData(&res, Vtable, PtrSize, AsyncInfo))
         return error::createOffloadError(error::ErrorCode::INVALID_BINARY,
                                          "failed to load %s", Entry.SymbolName);
+      if (Device.synchronize(AsyncInfo))
+        return error::createOffloadError(
+            error::ErrorCode::INVALID_BINARY,
+            "failed to synchronize after retrieving %s", Entry.SymbolName);
       // Calculate and emplace entire Vtable from first Vtable byte
       for (uint64_t i = 0; i < Entry.Size / PtrSize; ++i) {
         auto &[HstPtr, DevPtr] = IndirectCallTable.emplace_back();
-        HstPtr = (void *)((uintptr_t)Entry.Address + i * PtrSize);
-        DevPtr = (void *)((uintptr_t)res + i * PtrSize);
+        HstPtr = reinterpret_cast<void *>(
+            reinterpret_cast<uintptr_t>(Entry.Address) + i * PtrSize);
+        DevPtr = reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(res) +
+                                          i * PtrSize);
       }
     } else {
       // Indirect function case: Entry.Size should equal PtrSize since we're
@@ -145,15 +151,19 @@ setupIndirectCallTable(DeviceTy &Device, __tgt_device_image *Image,
       assert(Entry.Size == PtrSize && "Global not a function pointer?");
       auto &[HstPtr, DevPtr] = IndirectCallTable.emplace_back();
       void *Ptr;
-    if (Device.RTL->get_global(Binary, Entry.Size, Entry.SymbolName, &Ptr))
-      return error::createOffloadError(error::ErrorCode::INVALID_BINARY,
-                                       "failed to load %s", Entry.SymbolName);
+      if (Device.RTL->get_global(Binary, Entry.Size, Entry.SymbolName, &Ptr))
+        return error::createOffloadError(error::ErrorCode::INVALID_BINARY,
+                                         "failed to load %s", Entry.SymbolName);
 
-    HstPtr = Entry.Address;
-    if (Device.retrieveData(&DevPtr, Ptr, Entry.Size, AsyncInfo))
-      return error::createOffloadError(error::ErrorCode::INVALID_BINARY,
-                                       "failed to load %s", Entry.SymbolName);
+      HstPtr = Entry.Address;
+      if (Device.retrieveData(&DevPtr, Ptr, Entry.Size, AsyncInfo))
+        return error::createOffloadError(error::ErrorCode::INVALID_BINARY,
+                                         "failed to load %s", Entry.SymbolName);
     }
+    if (Device.synchronize(AsyncInfo))
+      return error::createOffloadError(
+          error::ErrorCode::INVALID_BINARY,
+          "failed to synchronize after retrieving %s", Entry.SymbolName);
   }
 
   // If we do not have any indirect globals we exit early.

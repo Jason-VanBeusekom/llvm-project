@@ -444,8 +444,8 @@ static int loadImagesOntoDevice(DeviceTy &Device) {
           // the device to point to the memory on the host.
           if ((PM->getRequirements() & OMP_REQ_UNIFIED_SHARED_MEMORY) ||
               (PM->getRequirements() & OMPX_REQ_AUTO_ZERO_COPY)) {
-            if (!(OMP_DECLARE_TARGET_INDIRECT_VTABLE |
-                  OMP_DECLARE_TARGET_INDIRECT) &&
+            if (!(Entry.Flags & OMP_DECLARE_TARGET_INDIRECT_VTABLE) &&
+                !(Entry.Flags & OMP_DECLARE_TARGET_INDIRECT) &&
                 Device.RTL->data_submit(DeviceId, DeviceEntry.Address,
                                         Entry.Address,
                                         Entry.Size) != OFFLOAD_SUCCESS)
