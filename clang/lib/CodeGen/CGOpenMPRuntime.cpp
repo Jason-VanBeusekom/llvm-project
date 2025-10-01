@@ -6344,9 +6344,8 @@ void CGOpenMPRuntime::emitTargetOutlinedFunctionHelper(
         : CGF(CGF), TargetCalls(TargetCalls) {}
 
     bool VisitCallExpr(CallExpr *CE) {
-      if (!CE->getDirectCallee()) {
+      if (!CE->getDirectCallee())
         TargetCalls.insert(CE);
-      }
       return true;
     }
 
