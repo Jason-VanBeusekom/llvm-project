@@ -3538,6 +3538,9 @@ protected:
   /// Whether the consecutive accessed addresses are in reverse order.
   bool Reverse;
 
+  /// Whether the memory access is uniform (same address across all lanes).
+  bool Uniform = false;
+
   /// Whether the memory access is masked.
   bool IsMasked = false;
 
@@ -3585,6 +3588,12 @@ public:
   /// order.
   bool isReverse() const { return Reverse; }
 
+  /// Return whether the memory access is uniform (same address for all lanes).
+  bool isUniform() const { return Uniform; }
+
+  /// Mark this memory access as uniform.
+  void setUniform(bool U) { Uniform = U; }
+
   /// Return the address accessed by this recipe.
   VPValue *getAddr() const { return getOperand(0); }
 
@@ -3627,9 +3636,11 @@ struct LLVM_ABI_FOR_TEST VPWidenLoadRecipe final : public VPWidenMemoryRecipe,
   }
 
   VPWidenLoadRecipe *clone() override {
-    return new VPWidenLoadRecipe(cast<LoadInst>(Ingredient), getAddr(),
+    auto *R = new VPWidenLoadRecipe(cast<LoadInst>(Ingredient), getAddr(),
                                  getMask(), Consecutive, Reverse, *this,
                                  getDebugLoc());
+    R->setUniform(Uniform);
+    return R;
   }
 
   VP_CLASSOF_IMPL(VPRecipeBase::VPWidenLoadSC);
@@ -3641,9 +3652,9 @@ struct LLVM_ABI_FOR_TEST VPWidenLoadRecipe final : public VPWidenMemoryRecipe,
   bool usesFirstLaneOnly(const VPValue *Op) const override {
     assert(is_contained(operands(), Op) &&
            "Op must be an operand of the recipe");
-    // Widened, consecutive loads operations only demand the first lane of
+    // Widened, consecutive or uniform loads only demand the first lane of
     // their address.
-    return Op == getAddr() && isConsecutive();
+    return Op == getAddr() && (isConsecutive() || isUniform());
   }
 
 protected:
@@ -3710,9 +3721,11 @@ struct LLVM_ABI_FOR_TEST VPWidenStoreRecipe final : public VPWidenMemoryRecipe {
   }
 
   VPWidenStoreRecipe *clone() override {
-    return new VPWidenStoreRecipe(cast<StoreInst>(Ingredient), getAddr(),
+    auto *R = new VPWidenStoreRecipe(cast<StoreInst>(Ingredient), getAddr(),
                                   getStoredValue(), getMask(), Consecutive,
                                   Reverse, *this, getDebugLoc());
+    R->setUniform(Uniform);
+    return R;
   }
 
   VP_CLASSOF_IMPL(VPRecipeBase::VPWidenStoreSC);
@@ -3727,9 +3740,10 @@ struct LLVM_ABI_FOR_TEST VPWidenStoreRecipe final : public VPWidenMemoryRecipe {
   bool usesFirstLaneOnly(const VPValue *Op) const override {
     assert(is_contained(operands(), Op) &&
            "Op must be an operand of the recipe");
-    // Widened, consecutive stores only demand the first lane of their address,
-    // unless the same operand is also stored.
-    return Op == getAddr() && isConsecutive() && Op != getStoredValue();
+    // Widened, consecutive or uniform stores only demand the first lane of
+    // their address, unless the same operand is also stored.
+    return Op == getAddr() && (isConsecutive() || isUniform()) &&
+           Op != getStoredValue();
   }
 
 protected:

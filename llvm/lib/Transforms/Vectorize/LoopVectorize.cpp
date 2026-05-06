@@ -8312,7 +8312,9 @@ VPlanPtr LoopVectorizationPlanner::tryToBuildVPlan(VFRange &Range) {
   for (ElementCount VF : Range)
     Plan->addVF(VF);
 
-  if (!VPlanTransforms::tryToConvertVPInstructionsToVPRecipes(*Plan, *TLI))
+  if (!VPlanTransforms::tryToConvertVPInstructionsToVPRecipes(*Plan, *TLI,
+                                                              &PSE, DT,
+                                                              OrigLoop))
     return nullptr;
 
   // Optimize induction live-out users to use precomputed end values.

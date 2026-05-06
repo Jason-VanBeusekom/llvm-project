@@ -3831,6 +3831,22 @@ void VPWidenLoadRecipe::execute(VPTransformState &State) {
   bool CreateGather = !isConsecutive();
 
   auto &Builder = State.Builder;
+
+  // Uniform load: scalar load from lane 0 pointer + broadcast.
+  if (isUniform()) {
+    Value *Addr = State.get(getAddr(), /*IsScalar*/ !CreateGather);
+    Value *ScalarAddr = CreateGather
+                            ? Builder.CreateExtractElement(Addr, uint64_t(0))
+                            : Addr;
+    Value *ScalarLoad = Builder.CreateAlignedLoad(ScalarDataTy, ScalarAddr,
+                                                  Alignment, "uniform.load");
+    applyMetadata(*cast<Instruction>(ScalarLoad));
+    Value *Broadcast = Builder.CreateVectorSplat(State.VF, ScalarLoad,
+                                                 "broadcast");
+    State.set(this, Broadcast);
+    return;
+  }
+
   Value *Mask = nullptr;
   if (auto *VPMask = getMask()) {
     // Mask reversal is only needed for non-all-one (null) masks, as reverse
@@ -3943,6 +3959,20 @@ void VPWidenStoreRecipe::execute(VPTransformState &State) {
   bool CreateScatter = !isConsecutive();
 
   auto &Builder = State.Builder;
+
+  // Uniform store: extract lane 0 value and do scalar store.
+  if (isUniform()) {
+    Value *Addr = State.get(getAddr(), /*IsScalar*/ !CreateScatter);
+    Value *ScalarAddr = CreateScatter
+                            ? Builder.CreateExtractElement(Addr, uint64_t(0))
+                            : Addr;
+    Value *StoredVal = State.get(StoredVPValue);
+    Value *ScalarVal = Builder.CreateExtractElement(StoredVal, uint64_t(0));
+    Instruction *NewSI =
+        Builder.CreateAlignedStore(ScalarVal, ScalarAddr, Alignment);
+    applyMetadata(*NewSI);
+    return;
+  }
 
   Value *Mask = nullptr;
   if (auto *VPMask = getMask()) {

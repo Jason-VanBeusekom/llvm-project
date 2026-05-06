@@ -119,6 +119,7 @@
 #include "llvm/Transforms/Scalar/LoopSimplifyCFG.h"
 #include "llvm/Transforms/Scalar/LoopSink.h"
 #include "llvm/Transforms/Scalar/LoopUnrollAndJamPass.h"
+#include "llvm/Transforms/Scalar/LoopUnrollForVectorization.h"
 #include "llvm/Transforms/Scalar/LoopUnrollPass.h"
 #include "llvm/Transforms/Scalar/LoopVersioningLICM.h"
 #include "llvm/Transforms/Scalar/LowerConstantIntrinsics.h"
@@ -322,6 +323,10 @@ extern cl::opt<bool> PGOInstrumentColdFunctionOnly;
 
 extern cl::opt<bool> EnableMemProfContextDisambiguation;
 } // namespace llvm
+
+static cl::opt<bool> EnableOuterLoopVecPrep(
+    "enable-outer-loop-vectorization-prep", cl::init(false), cl::Hidden,
+    cl::desc("Enable outer loop vectorization prep pass (prototype)"));
 
 PipelineTuningOptions::PipelineTuningOptions() {
   LoopInterleaving = true;
@@ -1316,9 +1321,41 @@ void PassBuilder::addVectorPasses(OptimizationLevel Level,
                                   ThinOrFullLTOPhase LTOPhase) {
   const bool IsFullLTO = LTOPhase == ThinOrFullLTOPhase::FullLTOPostLink;
 
+  // At O3, fully unroll small inner loops in multi-level nests before loop
+  // vectorization. This mirrors CCE's "unwind" pass: small-trip-count
+  // innermost loops are fully unrolled bottom-up, which can turn an outer
+  // loop (e.g., with a !dir$ vector always hint) into an innermost loop
+  // that LoopVectorize can handle. A cleanup block (Reassociate, LICM, GVN,
+  // InstCombine) simplifies the unrolled code before vectorization.
+  if (!IsFullLTO && Level == OptimizationLevel::O3 && PTO.LoopUnrolling &&
+      EnableOuterLoopVecPrep) {
+    //FPM.addPass(LoopUnrollForVectorizationPass());
+    FPM.addPass(ReassociatePass());
+    FPM.addPass(createFunctionToLoopPassAdaptor(
+        LICMPass(PTO.LicmMssaOptCap, PTO.LicmMssaNoAccForPromotionCap,
+                 /*AllowSpeculation=*/true),
+        /*UseMemorySSA=*/true));
+    FPM.addPass(GVNPass());
+    FPM.addPass(createFunctionToLoopPassAdaptor(
+        LICMPass(PTO.LicmMssaOptCap, PTO.LicmMssaNoAccForPromotionCap,
+                 /*AllowSpeculation=*/true),
+        /*UseMemorySSA=*/true));
+    FPM.addPass(InstCombinePass());
+  }
+
   FPM.addPass(LoopVectorizePass(
       LoopVectorizeOptions(!PTO.LoopInterleaving, !PTO.LoopVectorization)));
-
+    FPM.addPass(ReassociatePass());
+    FPM.addPass(createFunctionToLoopPassAdaptor(
+        LICMPass(PTO.LicmMssaOptCap, PTO.LicmMssaNoAccForPromotionCap,
+                 /*AllowSpeculation=*/true),
+        /*UseMemorySSA=*/true));
+    FPM.addPass(GVNPass());
+    FPM.addPass(createFunctionToLoopPassAdaptor(
+        LICMPass(PTO.LicmMssaOptCap, PTO.LicmMssaNoAccForPromotionCap,
+                 /*AllowSpeculation=*/true),
+        /*UseMemorySSA=*/true));
+    FPM.addPass(InstCombinePass());
   // Drop dereferenceable assumes after vectorization, as they are no longer
   // needed and can inhibit further optimization.
   if (!isLTOPreLink(LTOPhase))

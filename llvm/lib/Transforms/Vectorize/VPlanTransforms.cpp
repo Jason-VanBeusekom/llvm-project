@@ -30,6 +30,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Analysis/IVDescriptors.h"
 #include "llvm/Analysis/InstSimplifyFolder.h"
+#include "llvm/Analysis/LoopAccessAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/MemoryLocation.h"
 #include "llvm/Analysis/ScalarEvolutionPatternMatch.h"
@@ -47,8 +48,55 @@ using namespace llvm;
 using namespace VPlanPatternMatch;
 using namespace SCEVPatternMatch;
 
+/// Returns true if the SCEV \p S does not contain any SCEVAddRecExpr for
+/// loop \p L. This means the value is "uniform" across L's vector lanes
+/// when inner loops are known to be uniform (as verified by isUniformLoop).
+static bool isSCEVUniformOverLoop(const SCEV *S, const Loop *L) {
+  if (auto *AR = dyn_cast<SCEVAddRecExpr>(S))
+    if (AR->getLoop() == L)
+      return false;
+  for (const SCEV *Op : S->operands())
+    if (!isSCEVUniformOverLoop(Op, L))
+      return false;
+  return true;
+}
+
+/// For outer loop vectorization: walk through nested inner-loop AddRecs
+/// to find the stride of the pointer in the target (outer/vectorized) loop.
+/// Returns the stride (1 or -1) if found, 0 otherwise.
+/// E.g., for SCEV like {{base, +, 8}<OuterLoop>, +, 480}<InnerLoop>,
+/// the top-level AddRec is for InnerLoop, but the Start contains an AddRec
+/// for OuterLoop with step 8. If element size is 8, stride = 1.
+static int getOuterLoopPtrStride(ScalarEvolution &SE, const SCEV *PtrSCEV,
+                                 Type *AccessTy, Loop *TargetLoop) {
+  // Walk through AddRec chain. The pointer SCEV for an instruction in an
+  // inner loop typically has the innermost loop's AddRec at the top level.
+  // We need to dig into Start expressions to find the outer loop's AddRec.
+  const SCEV *S = PtrSCEV;
+  while (auto *AR = dyn_cast<SCEVAddRecExpr>(S)) {
+    if (AR->getLoop() == TargetLoop) {
+      // Found AddRec for target loop, check stride
+      const SCEV *Step = AR->getStepRecurrence(SE);
+      if (auto *StepC = dyn_cast<SCEVConstant>(Step)) {
+        int64_t StepVal = StepC->getAPInt().getSExtValue();
+        int64_t EltSize = SE.getDataLayout().getTypeAllocSize(AccessTy);
+        if (StepVal == EltSize)
+          return 1;
+        if (StepVal == -EltSize)
+          return -1;
+      }
+      return 0;
+    }
+    // The Start of this inner-loop AddRec may contain the outer loop's AddRec
+    S = AR->getStart();
+  }
+  return 0;
+}
+
 bool VPlanTransforms::tryToConvertVPInstructionsToVPRecipes(
-    VPlan &Plan, const TargetLibraryInfo &TLI) {
+    VPlan &Plan, const TargetLibraryInfo &TLI,
+    PredicatedScalarEvolution *PSE, const DominatorTree *DT,
+    Loop *TheLoop) {
 
   ReversePostOrderTraversal<VPBlockDeepTraversalWrapper<VPBlockBase *>> RPOT(
       Plan.getVectorLoopRegion());
@@ -78,15 +126,71 @@ bool VPlanTransforms::tryToConvertVPInstructionsToVPRecipes(
         assert(!isa<PHINode>(Inst) && "phis should be handled above");
         // Create VPWidenMemoryRecipe for loads and stores.
         if (LoadInst *Load = dyn_cast<LoadInst>(Inst)) {
-          NewRecipe = new VPWidenLoadRecipe(
+          bool Consecutive = false;
+          bool Reverse = false;
+          bool Uniform = false;
+          if (PSE && DT && TheLoop) {
+            int Stride =
+                getPtrStride(*PSE, Load->getType(),
+                             Load->getPointerOperand(), TheLoop, *DT)
+                    .value_or(0);
+            // If getPtrStride failed (instruction in inner loop), try
+            // walking nested AddRecs to find the outer loop stride.
+            if (!Stride) {
+              const SCEV *PtrSCEV =
+                  PSE->getSE()->getSCEV(Load->getPointerOperand());
+              Stride = getOuterLoopPtrStride(*PSE->getSE(), PtrSCEV,
+                                            Load->getType(), TheLoop);
+            }
+            Consecutive = (Stride == 1 || Stride == -1);
+            Reverse = (Stride == -1);
+            // If not consecutive, check if the pointer is uniform across
+            // the vectorized loop's lanes (doesn't depend on TheLoop's IV).
+            if (!Consecutive) {
+              const SCEV *PtrSCEV =
+                  PSE->getSE()->getSCEV(Load->getPointerOperand());
+              Uniform = isSCEVUniformOverLoop(PtrSCEV, TheLoop);
+            }
+          }
+          auto *LoadRecipe = new VPWidenLoadRecipe(
               *Load, Ingredient.getOperand(0), nullptr /*Mask*/,
-              false /*Consecutive*/, false /*Reverse*/, *VPI,
-              Ingredient.getDebugLoc());
+              Consecutive, Reverse, *VPI, Ingredient.getDebugLoc());
+          if (Uniform)
+            LoadRecipe->setUniform(true);
+          NewRecipe = LoadRecipe;
         } else if (StoreInst *Store = dyn_cast<StoreInst>(Inst)) {
-          NewRecipe = new VPWidenStoreRecipe(
+          bool Consecutive = false;
+          bool Reverse = false;
+          bool Uniform = false;
+          if (PSE && DT && TheLoop) {
+            int Stride =
+                getPtrStride(*PSE, Store->getValueOperand()->getType(),
+                             Store->getPointerOperand(), TheLoop, *DT)
+                    .value_or(0);
+            // If getPtrStride failed (instruction in inner loop), try
+            // walking nested AddRecs to find the outer loop stride.
+            if (!Stride) {
+              const SCEV *PtrSCEV =
+                  PSE->getSE()->getSCEV(Store->getPointerOperand());
+              Stride = getOuterLoopPtrStride(*PSE->getSE(), PtrSCEV,
+                                            Store->getValueOperand()->getType(),
+                                            TheLoop);
+            }
+            Consecutive = (Stride == 1 || Stride == -1);
+            Reverse = (Stride == -1);
+            if (!Consecutive) {
+              const SCEV *PtrSCEV =
+                  PSE->getSE()->getSCEV(Store->getPointerOperand());
+              Uniform = isSCEVUniformOverLoop(PtrSCEV, TheLoop);
+            }
+          }
+          auto *StoreRecipe = new VPWidenStoreRecipe(
               *Store, Ingredient.getOperand(1), Ingredient.getOperand(0),
-              nullptr /*Mask*/, false /*Consecutive*/, false /*Reverse*/, *VPI,
+              nullptr /*Mask*/, Consecutive, Reverse, *VPI,
               Ingredient.getDebugLoc());
+          if (Uniform)
+            StoreRecipe->setUniform(true);
+          NewRecipe = StoreRecipe;
         } else if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(Inst)) {
           NewRecipe = new VPWidenGEPRecipe(GEP, Ingredient.operands(), *VPI,
                                            Ingredient.getDebugLoc());

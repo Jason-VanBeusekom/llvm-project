@@ -1226,16 +1226,31 @@ void Flang::ConstructJob(Compilation &C, const JobAction &JA,
   }
 
   // Optimization level for CodeGen.
+  bool IsO3OrHigher = false;
   if (const Arg *A = Args.getLastArg(options::OPT_O_Group)) {
     if (A->getOption().matches(options::OPT_O4)) {
       CmdArgs.push_back("-O3");
       D.Diag(diag::warn_O4_is_O3);
+      IsO3OrHigher = true;
     } else if (A->getOption().matches(options::OPT_Ofast)) {
       CmdArgs.push_back("-O3");
       D.Diag(diag::warn_drv_deprecated_arg_ofast_for_flang);
+      IsO3OrHigher = true;
+    } else if (A->getOption().matches(options::OPT_O)) {
+      StringRef S(A->getValue());
+      unsigned OptLevel = 0;
+      if (!S.getAsInteger(10, OptLevel) && OptLevel >= 3)
+        IsO3OrHigher = true;
+      A->render(Args, CmdArgs);
     } else {
       A->render(Args, CmdArgs);
     }
+  }
+
+  // Enable outer loop vectorization prep pass at O3 and above.
+  if (IsO3OrHigher) {
+    CmdArgs.push_back("-mllvm");
+    CmdArgs.push_back("-enable-outer-loop-vectorization-prep");
   }
 
   renderGlobalISelOptions(D, Args, CmdArgs, Triple);

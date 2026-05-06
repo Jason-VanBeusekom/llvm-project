@@ -358,7 +358,7 @@ void LoopVectorizeHints::setHint(StringRef Name, Metadata *Arg) {
 // before introducing the aforementioned infrastructure. However, if this is not
 // the case, we should move the \p OuterLp independent checks to a separate
 // function that is only executed once for each \p Lp.
-static bool isUniformLoop(Loop *Lp, Loop *OuterLp) {
+static bool isUniformLoop(Loop *Lp, Loop *OuterLp, ScalarEvolution &SE) {
   assert(Lp->getLoopLatch() && "Expected loop with a single latch.");
 
   // If Lp is the outer loop, it's uniform by definition.
@@ -366,14 +366,7 @@ static bool isUniformLoop(Loop *Lp, Loop *OuterLp) {
     return true;
   assert(OuterLp->contains(Lp) && "OuterLp must contain Lp.");
 
-  // 1.
-  PHINode *IV = Lp->getCanonicalInductionVariable();
-  if (!IV) {
-    LLVM_DEBUG(dbgs() << "LV: Canonical IV not found.\n");
-    return false;
-  }
-
-  // 2.
+  // The loop must have a single latch with a conditional branch.
   BasicBlock *Latch = Lp->getLoopLatch();
   auto *LatchBr = dyn_cast<CondBrInst>(Latch->getTerminator());
   if (!LatchBr) {
@@ -381,20 +374,17 @@ static bool isUniformLoop(Loop *Lp, Loop *OuterLp) {
     return false;
   }
 
-  // 3.
-  auto *LatchCmp = dyn_cast<CmpInst>(LatchBr->getCondition());
-  if (!LatchCmp) {
-    LLVM_DEBUG(
-        dbgs() << "LV: Loop latch condition is not a compare instruction.\n");
+  // The loop's backedge-taken count must be computable and invariant with
+  // respect to the outer loop. This ensures the inner loop executes the same
+  // number of iterations regardless of which outer loop iteration we're in.
+  const SCEV *BTC = SE.getBackedgeTakenCount(Lp);
+  if (isa<SCEVCouldNotCompute>(BTC)) {
+    LLVM_DEBUG(dbgs() << "LV: Could not compute backedge-taken count.\n");
     return false;
   }
-
-  Value *CondOp0 = LatchCmp->getOperand(0);
-  Value *CondOp1 = LatchCmp->getOperand(1);
-  Value *IVUpdate = IV->getIncomingValueForBlock(Latch);
-  if (!(CondOp0 == IVUpdate && OuterLp->isLoopInvariant(CondOp1)) &&
-      !(CondOp1 == IVUpdate && OuterLp->isLoopInvariant(CondOp0))) {
-    LLVM_DEBUG(dbgs() << "LV: Loop latch condition is not uniform.\n");
+  if (!SE.isLoopInvariant(BTC, OuterLp)) {
+    LLVM_DEBUG(dbgs() << "LV: Backedge-taken count is not outer-loop "
+                         "invariant.\n");
     return false;
   }
 
@@ -403,13 +393,13 @@ static bool isUniformLoop(Loop *Lp, Loop *OuterLp) {
 
 // Return true if \p Lp and all its nested loops are uniform with regard to \p
 // OuterLp.
-static bool isUniformLoopNest(Loop *Lp, Loop *OuterLp) {
-  if (!isUniformLoop(Lp, OuterLp))
+static bool isUniformLoopNest(Loop *Lp, Loop *OuterLp, ScalarEvolution &SE) {
+  if (!isUniformLoop(Lp, OuterLp, SE))
     return false;
 
   // Check if nested loops are uniform.
   for (Loop *SubLp : *Lp)
-    if (!isUniformLoopNest(SubLp, OuterLp))
+    if (!isUniformLoopNest(SubLp, OuterLp, SE))
       return false;
 
   return true;
@@ -674,7 +664,8 @@ bool LoopVectorizationLegality::canVectorizeOuterLoop() {
   // Check whether inner loops are uniform. At this point, we only support
   // simple outer loops scenarios with uniform nested loops.
   if (!isUniformLoopNest(TheLoop /*loop nest*/,
-                         TheLoop /*context outer loop*/)) {
+                         TheLoop /*context outer loop*/,
+                         *PSE.getSE())) {
     reportVectorizationFailure("Outer loop contains divergent loops",
         "loop control flow is not understood by vectorizer",
         "CFGNotUnderstood", ORE, TheLoop);

@@ -199,10 +199,13 @@ struct VPlanTransforms {
 
   /// Replaces the VPInstructions in \p Plan with corresponding
   /// widen recipes. Returns false if any VPInstructions could not be converted
-  /// to a wide recipe if needed.
+  /// to a wide recipe if needed. If \p PSE, \p DT, and \p TheLoop are
+  /// provided, stride analysis is used to detect consecutive memory accesses.
   LLVM_ABI_FOR_TEST static bool
-  tryToConvertVPInstructionsToVPRecipes(VPlan &Plan,
-                                        const TargetLibraryInfo &TLI);
+  tryToConvertVPInstructionsToVPRecipes(
+      VPlan &Plan, const TargetLibraryInfo &TLI,
+      PredicatedScalarEvolution *PSE = nullptr,
+      const DominatorTree *DT = nullptr, Loop *TheLoop = nullptr);
 
   /// Try to legalize reductions with multiple in-loop uses. Currently only
   /// strict and non-strict min/max reductions used by FindLastIV reductions are
