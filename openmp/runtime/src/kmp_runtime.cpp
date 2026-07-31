@@ -4160,6 +4160,7 @@ static int __kmp_reset_root(int gtid, kmp_root_t *root) {
     KMP_DEBUG_ASSERT(root->r.r_uber_thread ==
                      root->r.r_uber_thread->th.th_cg_roots->cg_root);
     KMP_DEBUG_ASSERT(root->r.r_uber_thread->th.th_cg_roots->up == NULL);
+    __kmp_free_cg_groupprivate(root->r.r_uber_thread->th.th_cg_roots);
     __kmp_free(root->r.r_uber_thread->th.th_cg_roots);
     root->r.r_uber_thread->th.th_cg_roots = NULL;
   }
@@ -4339,6 +4340,7 @@ static void __kmp_initialize_info(kmp_info_t *this_thr, kmp_team_t *team,
                      " on node %p of thread %p to %d\n",
                      this_thr, tmp, tmp->cg_root, tmp->cg_nthreads));
       if (i == 1) {
+        __kmp_free_cg_groupprivate(tmp);
         __kmp_free(tmp); // last thread left CG --> free it
       }
     }
@@ -5785,6 +5787,7 @@ void __kmp_free_team(kmp_root_t *root, kmp_team_t *team, kmp_info_t *master) {
                        thr, tmp, thr->th.th_cg_roots, tmp->cg_nthreads));
         int i = tmp->cg_nthreads--;
         if (i == 1) {
+          __kmp_free_cg_groupprivate(tmp);
           __kmp_free(tmp); // free CG if we are the last thread in it
         }
         // Restore current task's thread_limit from CG root
@@ -5885,9 +5888,11 @@ void __kmp_free_thread(kmp_info_t *this_th) {
       KA_TRACE(
           5, ("__kmp_free_thread: Thread %p freeing node %p\n", this_th, tmp));
       this_th->th.th_cg_roots = tmp->up;
+      __kmp_free_cg_groupprivate(tmp);
       __kmp_free(tmp);
     } else { // Worker thread
       if (tmp->cg_nthreads == 0) { // last thread leaves contention group
+        __kmp_free_cg_groupprivate(tmp);
         __kmp_free(tmp);
       }
       this_th->th.th_cg_roots = NULL;

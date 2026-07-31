@@ -796,3 +796,113 @@ void __kmp_cleanup_threadprivate_caches() {
     ptr = __kmp_threadpriv_cache_list;
   }
 }
+
+// ----------------------------------------------------------------------------
+// Group-private (contention-group-private) support
+// ----------------------------------------------------------------------------
+//
+// Unlike threadprivate, which replicates a variable per thread, groupprivate
+// replicates a variable per contention group. On the host a contention group
+// is rooted at a thread: the primary thread of a teams region, or a root
+// thread otherwise (see kmp_cg_root_t / th_cg_roots). All threads that belong
+// to the same contention group share the same kmp_cg_root_t node (workers
+// inherit the primary's node pointer), so the copies are stored on that node
+// and are keyed within it by the original global address. The first thread in
+// a contention group to access the variable allocates and value-initializes
+// the copy from the original global; subsequent accesses by any thread in the
+// same contention group return that same copy.
+//
+// Because the copies live on the kmp_cg_root_t node, they are freed together
+// with the node when the contention group is torn down (see
+// __kmp_free_cg_groupprivate, called from the runtime wherever a node is
+// freed). This binds a copy's lifetime to its contention group, so a distinct
+// (nested or subsequent) contention group that reuses a root thread gets a
+// fresh, re-initialized copy rather than a stale one.
+//
+// TODO: A single global lock serializes all group-private list operations.
+// Because the lists are now per-contention-group, a per-node lock would allow
+// concurrent access across contention groups.
+
+typedef struct kmp_groupprivate_entry {
+  void *data; // original global variable address (identity key within a CG)
+  void *copy; // per-contention-group private copy
+  struct kmp_groupprivate_entry *next;
+} kmp_groupprivate_entry_t;
+
+static kmp_bootstrap_lock_t __kmp_groupprivate_lock =
+    KMP_BOOTSTRAP_LOCK_INITIALIZER(__kmp_groupprivate_lock);
+
+/*!
+ @ingroup THREADPRIVATE
+ @param loc source location information
+ @param global_tid global thread number
+ @param data pointer to the original global variable to privatize
+ @param size size of the variable
+ @return pointer to the contention-group-private copy
+
+ Return the calling thread's contention-group-private copy of a groupprivate
+ variable, allocating and value-initializing it on first access within the
+ contention group.
+*/
+void *__kmpc_groupprivate(ident_t *loc, kmp_int32 global_tid, void *data,
+                          size_t size) {
+  KC_TRACE(
+      10,
+      ("__kmpc_groupprivate: T#%d called, address: %p, size: %" KMP_SIZE_T_SPEC
+       "\n",
+       global_tid, data, size));
+
+  kmp_info_t *th = __kmp_threads[global_tid];
+  // All threads in a contention group share the front kmp_cg_root_t node (the
+  // node roots the current CG; workers inherit the primary's node pointer). A
+  // thread executing OpenMP always has such a node; if none exists there is no
+  // contention-group context, so fall back to the original global.
+  kmp_cg_root_t *cg = th->th.th_cg_roots;
+  if (cg == NULL)
+    return data;
+
+  __kmp_acquire_bootstrap_lock(&__kmp_groupprivate_lock);
+
+  kmp_groupprivate_entry_t *e = cg->cg_groupprivate;
+  for (; e != NULL; e = e->next)
+    if (e->data == data)
+      break;
+
+  if (e == NULL) {
+    e = (kmp_groupprivate_entry_t *)__kmp_allocate(
+        sizeof(kmp_groupprivate_entry_t));
+    e->data = data;
+    e->copy = __kmp_allocate(size ? size : 1);
+    if (size)
+      KMP_MEMCPY(e->copy, data, size);
+    e->next = cg->cg_groupprivate;
+    cg->cg_groupprivate = e;
+    KC_TRACE(20, ("__kmpc_groupprivate: T#%d allocated copy %p for CG %p\n",
+                  global_tid, e->copy, cg->cg_root));
+  }
+
+  void *ret = e->copy;
+  __kmp_release_bootstrap_lock(&__kmp_groupprivate_lock);
+
+  KC_TRACE(10, ("__kmpc_groupprivate: T#%d exiting; return value = %p\n",
+                global_tid, ret));
+  return ret;
+}
+
+// Free the group-private copies owned by a contention group. Called from the
+// runtime wherever a kmp_cg_root_t node is freed, so a copy's lifetime matches
+// its contention group.
+void __kmp_free_cg_groupprivate(kmp_cg_root_t *cg_root) {
+  if (cg_root == NULL || cg_root->cg_groupprivate == NULL)
+    return;
+  __kmp_acquire_bootstrap_lock(&__kmp_groupprivate_lock);
+  kmp_groupprivate_entry_t *e = cg_root->cg_groupprivate;
+  while (e) {
+    kmp_groupprivate_entry_t *next = e->next;
+    __kmp_free(e->copy);
+    __kmp_free(e);
+    e = next;
+  }
+  cg_root->cg_groupprivate = NULL;
+  __kmp_release_bootstrap_lock(&__kmp_groupprivate_lock);
+}

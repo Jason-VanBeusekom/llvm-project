@@ -2917,6 +2917,7 @@ typedef struct kmp_teams_size {
 // single entry where cg_root is same as the entry containing their CG
 // root. When a thread encounters a teams construct, it will add a new
 // entry to the front of its list, because it now roots a new CG.
+struct kmp_groupprivate_entry; // groupprivate copies owned by a contention group
 typedef struct kmp_cg_root {
   kmp_info_p *cg_root; // "root" thread for a contention group
   // The CG root's limit comes from OMP_THREAD_LIMIT for root threads, or
@@ -2924,6 +2925,8 @@ typedef struct kmp_cg_root {
   kmp_int32 cg_thread_limit;
   kmp_int32 cg_nthreads; // Count of active threads in CG rooted at cg_root
   struct kmp_cg_root *up; // pointer to higher level CG root in list
+  // Head of this contention group's groupprivate copies; freed with the node.
+  struct kmp_groupprivate_entry *cg_groupprivate;
 } kmp_cg_root_t;
 
 // OpenMP thread data structures
@@ -4467,6 +4470,9 @@ KMP_EXPORT void *__kmpc_threadprivate_cached(ident_t *loc, kmp_int32 global_tid,
                                              void *data, size_t size,
                                              void ***cache);
 
+KMP_EXPORT void *__kmpc_groupprivate(ident_t *loc, kmp_int32 global_tid,
+                                     void *data, size_t size);
+
 // The routines below are not exported.
 // Consider making them 'static' in corresponding source files.
 void kmp_threadprivate_insert_private_data(int gtid, void *pc_addr,
@@ -4476,6 +4482,7 @@ struct private_common *kmp_threadprivate_insert(int gtid, void *pc_addr,
                                                 size_t pc_size);
 void __kmp_threadprivate_resize_cache(int newCapacity);
 void __kmp_cleanup_threadprivate_caches();
+void __kmp_free_cg_groupprivate(kmp_cg_root_t *cg_root);
 
 // ompc_, kmpc_ entries moved from omp.h.
 #if KMP_OS_WINDOWS

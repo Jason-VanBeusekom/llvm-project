@@ -4087,8 +4087,13 @@ llvm.func @omp_groupprivate_host() {
 // CHECK-DAG: @host1 = internal global i32 undef
 // CHECK-DAG: @nohost1 = internal global i32 undef
 // CHECK-LABEL: define void @omp_groupprivate_host()
-// CHECK: store i32 1, ptr @any1, align 4
-// CHECK: store i32 1, ptr @host1, align 4
+// A groupprivate directive on the host obtains a per-contention-group copy
+// through the runtime for device_type 'any' and 'host'. A 'nohost' variable is
+// not group-private on the host, so the original global is used.
+// CHECK: %[[ANY:.*]] = call ptr @__kmpc_groupprivate(ptr @{{.*}}, i32 %{{.*}}, ptr @any1, i64 4)
+// CHECK: store i32 1, ptr %[[ANY]], align 4
+// CHECK: %[[HOST:.*]] = call ptr @__kmpc_groupprivate(ptr @{{.*}}, i32 %{{.*}}, ptr @host1, i64 4)
+// CHECK: store i32 1, ptr %[[HOST]], align 4
 // CHECK: store i32 1, ptr @nohost1, align 4
 // CHECK: ret void
 

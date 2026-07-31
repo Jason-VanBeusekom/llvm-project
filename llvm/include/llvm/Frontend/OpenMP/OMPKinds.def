@@ -401,6 +401,7 @@ __OMP_RTL(__kmpc_copyprivate, false, Void, IdentPtr, Int32, SizeTy, VoidPtr,
           CopyFunctionPtr, Int32)
 __OMP_RTL(__kmpc_threadprivate_cached, false, VoidPtr, IdentPtr, Int32, VoidPtr,
           SizeTy, VoidPtrPtrPtr)
+__OMP_RTL(__kmpc_groupprivate, false, VoidPtr, IdentPtr, Int32, VoidPtr, SizeTy)
 __OMP_RTL(__kmpc_threadprivate_register, false, Void, IdentPtr, VoidPtr,
           KmpcCtorPtr, KmpcCopyCtorPtr, KmpcDtorPtr)
 
@@ -969,6 +970,8 @@ __OMP_RTL_ATTRS(__kmpc_copyprivate, DefaultAttrs, AttributeSet(),
                 ParamAttrs(ReadOnlyPtrAttrs, SExt, SizeTyExt,
                            ReadOnlyPtrAttrs, AttributeSet(), SExt))
 __OMP_RTL_ATTRS(__kmpc_threadprivate_cached, DefaultAttrs, AttributeSet(),
+                ParamAttrs(ReadOnlyPtrAttrs, SExt, AttributeSet(), SizeTyExt))
+__OMP_RTL_ATTRS(__kmpc_groupprivate, DefaultAttrs, AttributeSet(),
                 ParamAttrs(ReadOnlyPtrAttrs, SExt, AttributeSet(), SizeTyExt))
 __OMP_RTL_ATTRS(__kmpc_threadprivate_register, DefaultAttrs, AttributeSet(),
                 ParamAttrs(ReadOnlyPtrAttrs, AttributeSet(), ReadOnlyPtrAttrs,

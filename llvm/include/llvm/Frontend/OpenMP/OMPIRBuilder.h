@@ -3413,6 +3413,21 @@ public:
                             llvm::Value *Pointer, llvm::ConstantInt *Size,
                             const llvm::Twine &Name = Twine(""));
 
+  /// Create a runtime call for __kmpc_groupprivate
+  ///
+  /// Returns the calling thread's contention-group-private copy of a
+  /// groupprivate variable, allocating and value-initializing it on first
+  /// access within the contention group.
+  ///
+  /// \param Loc The insert and source location description.
+  /// \param Pointer pointer to the original global variable to privatize
+  /// \param Size size of the variable
+  ///
+  /// \returns CallInst to the groupprivate call.
+  LLVM_ABI CallInst *createGroupPrivate(const LocationDescription &Loc,
+                                        llvm::Value *Pointer,
+                                        llvm::ConstantInt *Size);
+
   /// Create a runtime call for __tgt_interop_init
   ///
   /// \param Loc The insert and source location description.

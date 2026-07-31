@@ -561,6 +561,7 @@ void __kmpc_fork_teams(ident_t *loc, kmp_int32 argc, kmpc_micro microtask,
   KMP_DEBUG_ASSERT(tmp->cg_nthreads);
   int i = tmp->cg_nthreads--;
   if (i == 1) { // check is we are the last thread in CG (not always the case)
+    __kmp_free_cg_groupprivate(tmp);
     __kmp_free(tmp);
   }
   // Restore current task's thread_limit from CG root

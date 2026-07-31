@@ -8349,6 +8349,23 @@ CallInst *OpenMPIRBuilder::createCachedThreadPrivate(
   return createRuntimeFunctionCall(Fn, Args);
 }
 
+CallInst *OpenMPIRBuilder::createGroupPrivate(const LocationDescription &Loc,
+                                              llvm::Value *Pointer,
+                                              llvm::ConstantInt *Size) {
+  IRBuilder<>::InsertPointGuard IPG(Builder);
+  updateToLocation(Loc);
+
+  uint32_t SrcLocStrSize;
+  Constant *SrcLocStr = getOrCreateSrcLocStr(Loc, SrcLocStrSize);
+  Value *Ident = getOrCreateIdent(SrcLocStr, SrcLocStrSize);
+  Value *ThreadId = getOrCreateThreadID(Ident);
+  llvm::Value *Args[] = {Ident, ThreadId, Pointer, Size};
+
+  Function *Fn = getOrCreateRuntimeFunctionPtr(OMPRTL___kmpc_groupprivate);
+
+  return createRuntimeFunctionCall(Fn, Args);
+}
+
 OpenMPIRBuilder::InsertPointTy OpenMPIRBuilder::createTargetInit(
     const LocationDescription &Loc,
     const llvm::OpenMPIRBuilder::TargetKernelDefaultAttrs &Attrs) {

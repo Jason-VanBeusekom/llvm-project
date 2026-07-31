@@ -9802,10 +9802,18 @@ convertOmpGroupprivate(Operation &opInst, llvm::IRBuilderBase &builder,
         sharedAddressSpace,
         /*isExternallyInitialized=*/false);
     resultPtr = sharedVar;
+  } else if (shouldAllocate && !isTargetDevice) {
+    // Host: obtain a per-contention-group copy through the runtime. Each
+    // contention group (each team, on the host) gets its own copy, mirroring
+    // the shared-memory copy allocated on the device.
+    llvm::Module *llvmModule = moduleTranslation.getLLVMModule();
+    const llvm::DataLayout &dl = llvmModule->getDataLayout();
+    llvm::ConstantInt *size =
+        llvm::cast<llvm::ConstantInt>(llvm::ConstantInt::get(
+            ompBuilder->SizeTy, dl.getTypeAllocSize(varType).getFixedValue()));
+    llvm::OpenMPIRBuilder::LocationDescription ompLoc(builder);
+    resultPtr = ompBuilder->createGroupPrivate(ompLoc, globalValue, size);
   } else {
-    if (shouldAllocate && !isTargetDevice)
-      opInst.emitWarning("groupprivate directive is currently ignored on the "
-                         "host, using original global");
     resultPtr = globalValue;
   }
 
