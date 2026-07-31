@@ -95,6 +95,33 @@ extractOnlyOmpNestedEval(lower::pft::Evaluation &parent) {
   return &nested;
 }
 
+/// Return whether the `target` construct currently being lowered (identified by
+/// \p item in \p queue, with associated evaluation \p eval) immediately encloses
+/// a `teams` construct. This is true both for the combined form
+/// (`!$omp target teams`), where `teams` is the following leaf in \p queue, and
+/// for the separated form (`!$omp target` with a single nested `!$omp teams`).
+/// In such cases groupprivate is materialised on the nested `teams` construct
+/// rather than on the `target` construct itself.
+static bool targetImmediatelyNestsTeams(lower::pft::Evaluation &eval,
+                                        const ConstructQueue &queue,
+                                        ConstructQueue::const_iterator item) {
+  // Combined form: `teams` is the leaf following `target` in the queue.
+  if (std::next(item) != queue.end())
+    return llvm::omp::topTeamsSet.test(std::next(item)->id);
+
+  // Separated form: the target's only nested OpenMP construct is a `teams`
+  // construct.
+  if (lower::pft::Evaluation *nestedEval = extractOnlyOmpNestedEval(eval)) {
+    const auto &ompEval = nestedEval->get<parser::OpenMPConstruct>();
+    llvm::omp::Directive nestedDir = parser::omp::GetOmpDirectiveName(ompEval).v;
+    llvm::omp::Directive firstLeafDir =
+        llvm::omp::getLeafConstructsOrSelf(nestedDir).front();
+    return llvm::omp::topTeamsSet.test(firstLeafDir);
+  }
+
+  return false;
+}
+
 static llvm::SmallVector<Object>
 makeObjects(llvm::ArrayRef<const semantics::Symbol *> syms) {
   llvm::SmallVector<Object> objects;
@@ -2127,7 +2154,11 @@ static void createBodyOfOp(mlir::Operation &op, const OpWithBodyGenInfo &info,
     }
   }
 
-  // TODO: groupprivate is currently only materialised for `teams` constructs.
+  // Materialise groupprivate copies for the contention group established by a
+  // `teams` construct. When groupprivate is used inside a `target` region with
+  // no enclosing `teams`, the copies are materialised on the `target` construct
+  // itself (see genBodyOfTargetOp), making `target` equivalent to
+  // `target teams num_teams(1)`.
   if (info.dir == llvm::omp::Directive::OMPD_teams)
     groupprivatizeVars(info.converter, info.eval);
 
@@ -2378,6 +2409,14 @@ static void genBodyOfTargetOp(
 
   // Create the insertion point after the marker.
   firOpBuilder.setInsertionPointAfter(undefMarker.getDefiningOp());
+
+  // Materialise groupprivate copies for the target's initial team, which forms
+  // its contention group, unless the target immediately encloses a `teams`
+  // construct (in which case the copies are materialised on the `teams`
+  // construct instead; see createBodyOfOp). This makes groupprivate handling in
+  // `target` equivalent to `target teams num_teams(1)`.
+  if (!targetImmediatelyNestsTeams(eval, queue, item))
+    groupprivatizeVars(converter, eval);
 
   if (ConstructQueue::const_iterator next = std::next(item);
       next != queue.end()) {
