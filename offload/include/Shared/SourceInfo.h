@@ -14,6 +14,7 @@
 #define OMPTARGET_SHARED_SOURCE_INFO_H
 
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 
 #ifdef _WIN32
@@ -36,6 +37,16 @@ struct ident_t {
   int32_t reserved_3;
   char const *psource;
 };
+
+/// Whether the runtime should print full source paths instead of just the file
+/// name. Controlled by LIBOMPTARGET_INFO_FULL_PATH (default: off = basename).
+inline bool useFullSourcePath() {
+  static const bool FullPath = [] {
+    const char *Env = std::getenv("LIBOMPTARGET_INFO_FULL_PATH");
+    return Env && std::atoi(Env) != 0;
+  }();
+  return FullPath;
+}
 
 /// Struct to hold source individual location information.
 class SourceInfo {
@@ -75,8 +86,10 @@ class SourceInfo {
     return SourceStr.substr(Begin + 1, End - Begin - 1);
   };
 
-  /// Get the filename from a full path.
+  /// Get the filename from a full path, unless full paths were requested.
   std::string removePath(const std::string &Path) const {
+    if (useFullSourcePath())
+      return Path;
     std::size_t Pos = (OSWindows) ? Path.rfind('\\') : Path.rfind('/');
     return Path.substr(Pos + 1);
   };
