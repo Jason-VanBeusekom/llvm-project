@@ -8533,6 +8533,15 @@ OpenMPIRBuilder::InsertPointTy OpenMPIRBuilder::createTargetInit(
   if (!updateToLocation(Loc))
     return Loc.IP;
 
+  // The runtime call and control flow emitted below need a debug location when
+  // the enclosing kernel carries debug info; otherwise the verifier rejects the
+  // inlinable __kmpc_target_init call. Fall back to the subprogram's location.
+  if (!Builder.getCurrentDebugLocation())
+    if (DISubprogram *SP =
+            Builder.GetInsertBlock()->getParent()->getSubprogram())
+      Builder.SetCurrentDebugLocation(
+          DILocation::get(M.getContext(), SP->getLine(), /*Column=*/0, SP));
+
   uint32_t SrcLocStrSize;
   Constant *SrcLocStr = getOrCreateSrcLocStr(Loc, SrcLocStrSize);
   Constant *Ident = getOrCreateIdent(SrcLocStr, SrcLocStrSize);
@@ -8680,6 +8689,27 @@ void OpenMPIRBuilder::createTargetDeinit(const LocationDescription &Loc,
                                          int32_t TeamsReductionDataSize) {
   if (!updateToLocation(Loc))
     return;
+
+  // Ensure a debug location so the inlinable __kmpc_target_deinit call verifies
+  // inside a kernel that has debug info. Fall back to the subprogram's location.
+  if (!Builder.getCurrentDebugLocation())
+    if (DISubprogram *SP =
+            Builder.GetInsertBlock()->getParent()->getSubprogram())
+      Builder.SetCurrentDebugLocation(
+          DILocation::get(M.getContext(), SP->getLine(), /*Column=*/0, SP));
+
+  // The matching __kmpc_target_init call is emitted by createTargetInit before
+  // the kernel's subprogram is attached, so it can be left without a debug
+  // location; fix it up here, where the subprogram is available.
+  if (DebugLoc DbgLoc = Builder.getCurrentDebugLocation()) {
+    Function *Kernel = Builder.GetInsertBlock()->getParent();
+    Function *InitFn = getOrCreateRuntimeFunctionPtr(
+        omp::RuntimeFunction::OMPRTL___kmpc_target_init);
+    for (Instruction &I : Kernel->getEntryBlock())
+      if (auto *CI = dyn_cast<CallInst>(&I))
+        if (CI->getCalledFunction() == InitFn && !CI->getDebugLoc())
+          CI->setDebugLoc(DbgLoc);
+  }
 
   Function *Fn = getOrCreateRuntimeFunctionPtr(
       omp::RuntimeFunction::OMPRTL___kmpc_target_deinit);
