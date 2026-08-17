@@ -8564,16 +8564,37 @@ convertOmpTargetData(Operation *op, llvm::IRBuilderBase &builder,
   llvm::SmallVector<llvm::BasicBlock *> deallocBlocks;
   llvm::OpenMPIRBuilder::InsertPointTy allocaIP =
       findAllocInsertPoints(builder, moduleTranslation, &deallocBlocks);
+
+  // Without -g there is no debug location to carry the data region's source
+  // position to the runtime. Build an identifier from the op's own MLIR
+  // location so the runtime can still report file/line without -g.
+  llvm::Value *srcLocOverride = nullptr;
+  if (isOffloadEntry && !ompLoc.DL) {
+    if (auto fileLoc = op->getLoc()->findInstanceOf<FileLineColLoc>()) {
+      uint32_t strSize;
+      llvm::Function *parentFn = builder.GetInsertBlock()->getParent();
+      llvm::StringRef fnName = parentFn ? parentFn->getName() : "";
+      llvm::Constant *srcStr = ompBuilder->getOrCreateSrcLocStr(
+          fnName, fileLoc.getFilename(), fileLoc.getLine(),
+          fileLoc.getColumn(), strSize);
+      srcLocOverride = ompBuilder->getOrCreateIdent(srcStr, strSize);
+    }
+  }
+
   llvm::OpenMPIRBuilder::InsertPointOrErrorTy afterIP = [&]() {
     if (isa<omp::TargetDataOp>(op))
       return ompBuilder->createTargetData(ompLoc, allocaIP, builder.saveIP(),
                                           deallocBlocks, deviceID, ifCond, info,
                                           genMapInfoCB, customMapperCB,
                                           /*MapperFunc=*/nullptr, bodyGenCB,
-                                          /*DeviceAddrCB=*/nullptr);
+                                          /*DeviceAddrCB=*/nullptr,
+                                          srcLocOverride);
     return ompBuilder->createTargetData(ompLoc, allocaIP, builder.saveIP(),
                                         deallocBlocks, deviceID, ifCond, info,
-                                        genMapInfoCB, customMapperCB, &RTLFn);
+                                        genMapInfoCB, customMapperCB, &RTLFn,
+                                        /*BodyGenCB=*/nullptr,
+                                        /*DeviceAddrCB=*/nullptr,
+                                        srcLocOverride);
   }();
 
   if (failed(handleError(afterIP, *op)))
@@ -9736,12 +9757,30 @@ convertOmpTarget(Operation &opInst, llvm::IRBuilderBase &builder,
   llvm::omp::OMPDynGroupprivateFallbackType fallbackType =
       getDynGroupprivateFallbackType(targetOp.getDynGroupprivateFallbackAttr());
 
+  // Without -g there is no debug location to carry the target region's source
+  // position to the runtime. Build a kernel-launch identifier from the op's own
+  // MLIR location so the runtime can still report file/line without -g. Only on
+  // the host offload path that actually emits the kernel launch, to avoid
+  // creating an unused identifier on the device.
+  llvm::Value *rtLocOverride = nullptr;
+  if (!isTargetDevice && isOffloadEntry && !ompLoc.DL) {
+    if (auto fileLoc = targetOp.getLoc()->findInstanceOf<FileLineColLoc>()) {
+      uint32_t strSize;
+      llvm::StringRef fnName = parentLLVMFn ? parentLLVMFn->getName() : "";
+      llvm::Constant *srcStr = ompBuilder->getOrCreateSrcLocStr(
+          fnName, fileLoc.getFilename(), fileLoc.getLine(),
+          fileLoc.getColumn(), strSize);
+      rtLocOverride = ompBuilder->getOrCreateIdent(srcStr, strSize);
+    }
+  }
+
   llvm::OpenMPIRBuilder::InsertPointOrErrorTy afterIP =
       moduleTranslation.getOpenMPBuilder()->createTarget(
           ompLoc, isOffloadEntry, allocaIP, builder.saveIP(), deallocBlocks,
           info, entryInfo, defaultAttrs, runtimeAttrs, ifCond, kernelInput,
           genMapInfoCB, bodyCB, argAccessorCB, customMapperCB, dds,
-          targetOp.getNowait(), dynSizeVal, fallbackType, outlinedFnDbgLoc);
+          targetOp.getNowait(), dynSizeVal, fallbackType, outlinedFnDbgLoc,
+          rtLocOverride);
 
   if (failed(handleError(afterIP, opInst)))
     return failure();
